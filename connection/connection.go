@@ -27,6 +27,7 @@ import (
 
 	"github.com/kubernetes-csi/csi-lib-utils/metrics"
 	"github.com/kubernetes-csi/csi-lib-utils/protosanitizer"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"k8s.io/klog/v2"
 )
@@ -121,6 +122,7 @@ func connect(
 		grpc.WithChainUnaryInterceptor(
 			LogGRPC, // Log all messages.
 			ExtendedCSIMetricsManager{metricsManager}.RecordMetricsClientInterceptor, // Record metrics for each gRPC call.
+			otelgrpc.UnaryClientInterceptor(),                                        // Record traces for each gRPC call.
 		),
 	)
 	unixPrefix := "unix://"
