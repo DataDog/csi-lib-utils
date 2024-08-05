@@ -2,24 +2,16 @@ package taint
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
+	"k8s.io/kubernetes/pkg/controller"
+	taintutils "k8s.io/kubernetes/pkg/util/taints"
 )
 
 const AgentNotReadyNodeTaintKeySuffix = "/agent-not-ready"
-
-// JSONPatch is a struct for JSON patch operations
-type JSONPatch struct {
-	OP    string      `json:"op,omitempty"`
-	Path  string      `json:"path,omitempty"`
-	Value interface{} `json:"value"`
-}
 
 // RemoveTaintInBackground is a goroutine that retries removeNotReadyTaint with exponential backoff
 func RemoveTaintInBackground(ctx context.Context, k8sClient kubernetes.Interface, nodeName, driverName string, backoff wait.Backoff) {
@@ -53,41 +45,15 @@ func removeNotReadyTaint(ctx context.Context, clientset kubernetes.Interface, no
 	}
 
 	taintKeyToRemove := driverName + AgentNotReadyNodeTaintKeySuffix
+
 	logger.V(2).Info("removing taint", "key", taintKeyToRemove, "node", nodeName)
-	var taintsToKeep []corev1.Taint
-	for _, taint := range node.Spec.Taints {
-		logger.V(5).Info("checking taint", "key", taint.Key, "value", taint.Value, "effect", taint.Effect)
-		if taint.Key != taintKeyToRemove {
-			taintsToKeep = append(taintsToKeep, taint)
-		} else {
-			logger.V(2).Info("queued taint for removal", "key", taint.Key, "effect", taint.Effect)
-		}
-	}
 
-	if len(taintsToKeep) == len(node.Spec.Taints) {
-		logger.V(2).Info("No taints to remove on node, skipping taint removal")
-		return nil
-	}
+	// We cannot use controller.RemoveTaintOffNode as it matches against effect as well
+	newTaints, _ := taintutils.DeleteTaintsByKey(node.Spec.Taints, taintKeyToRemove)
+	newNode := node.DeepCopy()
+	newNode.Spec.Taints = newTaints
+	err = controller.PatchNodeTaints(ctx, clientset, nodeName, node, newNode)
 
-	patchRemoveTaints := []JSONPatch{
-		{
-			OP:    "test",
-			Path:  "/spec/taints",
-			Value: node.Spec.Taints,
-		},
-		{
-			OP:    "replace",
-			Path:  "/spec/taints",
-			Value: taintsToKeep,
-		},
-	}
-
-	patch, err := json.Marshal(patchRemoveTaints)
-	if err != nil {
-		return err
-	}
-
-	_, err = clientset.CoreV1().Nodes().Patch(ctx, nodeName, k8stypes.JSONPatchType, patch, metav1.PatchOptions{})
 	if err != nil {
 		return err
 	}
