@@ -58,7 +58,7 @@ func TestRemoveTaint(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	RemoveTaintInBackground(client, nodeName, driverName, taintRemovalBackoff)
+	RemoveTaintInBackground(context.TODO(), client, nodeName, driverName, taintRemovalBackoff)
 
 	for event := range w.ResultChan() {
 		n, ok := event.Object.(*v1.Node)

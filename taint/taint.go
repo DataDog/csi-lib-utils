@@ -22,26 +22,27 @@ type JSONPatch struct {
 }
 
 // RemoveTaintInBackground is a goroutine that retries removeNotReadyTaint with exponential backoff
-func RemoveTaintInBackground(k8sClient kubernetes.Interface, nodeName, driverName string, backoff wait.Backoff) {
+func RemoveTaintInBackground(ctx context.Context, k8sClient kubernetes.Interface, nodeName, driverName string, backoff wait.Backoff) {
+	logger := klog.FromContext(ctx)
 	backoffErr := wait.ExponentialBackoff(backoff, func() (bool, error) {
-		err := removeNotReadyTaint(k8sClient, nodeName, driverName)
+		err := removeNotReadyTaint(ctx, k8sClient, nodeName, driverName)
 		if err != nil {
-			klog.ErrorS(err, "Unexpected failure when attempting to remove node taint(s)")
+			logger.Error(err, "Unexpected failure when attempting to remove node taint(s)")
 			return false, nil
 		}
 		return true, nil
 	})
 
 	if backoffErr != nil {
-		klog.ErrorS(backoffErr, "Retries exhausted, giving up attempting to remove node taint(s)")
+		logger.Error(backoffErr, "Retries exhausted, giving up attempting to remove node taint(s)")
 	}
 }
 
 // removeNotReadyTaint removes the taint driverName/agent-not-ready from the local node
 // This taint can be optionally applied by users to prevent startup race conditions such as
 // https://github.com/kubernetes/kubernetes/issues/95911
-func removeNotReadyTaint(clientset kubernetes.Interface, nodeName, driverName string) error {
-	ctx := context.Background()
+func removeNotReadyTaint(ctx context.Context, clientset kubernetes.Interface, nodeName, driverName string) error {
+	logger := klog.FromContext(ctx)
 	node, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return err
@@ -52,19 +53,19 @@ func removeNotReadyTaint(clientset kubernetes.Interface, nodeName, driverName st
 	}
 
 	taintKeyToRemove := driverName + AgentNotReadyNodeTaintKeySuffix
-	klog.V(2).Infof("removing taint with key %s from local node %s", taintKeyToRemove, nodeName)
+	logger.V(2).Info("removing taint", "key", taintKeyToRemove, "node", nodeName)
 	var taintsToKeep []corev1.Taint
 	for _, taint := range node.Spec.Taints {
-		klog.V(5).Infof("checking taint key %s, value %s, effect %s", taint.Key, taint.Value, taint.Effect)
+		logger.V(5).Info("checking taint", "key", taint.Key, "value", taint.Value, "effect", taint.Effect)
 		if taint.Key != taintKeyToRemove {
 			taintsToKeep = append(taintsToKeep, taint)
 		} else {
-			klog.V(2).Infof("queued taint for removal with key %s, effect %s", taint.Key, taint.Effect)
+			logger.V(2).Info("queued taint for removal", "key", taint.Key, "effect", taint.Effect)
 		}
 	}
 
 	if len(taintsToKeep) == len(node.Spec.Taints) {
-		klog.V(2).Infof("No taints to remove on node, skipping taint removal")
+		logger.V(2).Info("No taints to remove on node, skipping taint removal")
 		return nil
 	}
 
@@ -90,11 +91,12 @@ func removeNotReadyTaint(clientset kubernetes.Interface, nodeName, driverName st
 	if err != nil {
 		return err
 	}
-	klog.V(2).Infof("removed taint with key %s from local node %s successfully", taintKeyToRemove, nodeName)
+	logger.V(2).Info("removed taint successfully", "key", taintKeyToRemove, "node", nodeName)
 	return nil
 }
 
 func checkAllocatable(ctx context.Context, clientset kubernetes.Interface, nodeName, driverName string) error {
+	logger := klog.FromContext(ctx)
 	csiNode, err := clientset.StorageV1().CSINodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("isAllocatableSet: failed to get CSINode for %s: %w", nodeName, err)
@@ -103,7 +105,7 @@ func checkAllocatable(ctx context.Context, clientset kubernetes.Interface, nodeN
 	for _, driver := range csiNode.Spec.Drivers {
 		if driver.Name == driverName {
 			if driver.Allocatable != nil && driver.Allocatable.Count != nil {
-				klog.V(2).Infof("CSINode Allocatable value is set for driver on node %s, count %d", nodeName, *driver.Allocatable.Count)
+				logger.V(2).Info("CSINode Allocatable value is set for driver", "node", nodeName, "count", *driver.Allocatable.Count)
 				return nil
 			}
 			return fmt.Errorf("isAllocatableSet: allocatable value not set for driver on node %s", nodeName)
